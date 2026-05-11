@@ -164,14 +164,19 @@ GUIDES = {
 }
 
 def stats_text():
+    s_total = f"{stats['total']:,}"
+    s_tiktok = f"{stats['tiktok']:,}"
+    s_facebook = f"{stats['facebook']:,}"
+    s_instagram = f"{stats['instagram']:,}"
+    s_users = f"{len(stats['users']):,}"
     return (
         f"{b('إحصائيات SnatchTik Bot')}\n"
         f"{DIVIDER}\n\n"
-        f"إجمالي التحميلات   {code(f\"{stats['total']:,}\")}\n"
-        f"TikTok             {code(f\"{stats['tiktok']:,}\")}\n"
-        f"Facebook           {code(f\"{stats['facebook']:,}\")}\n"
-        f"Instagram          {code(f\"{stats['instagram']:,}\")}\n"
-        f"المستخدمون         {code(f\"{len(stats['users']):,}\")}"
+        f"إجمالي التحميلات   {code(s_total)}\n"
+        f"TikTok             {code(s_tiktok)}\n"
+        f"Facebook           {code(s_facebook)}\n"
+        f"Instagram          {code(s_instagram)}\n"
+        f"المستخدمون         {code(s_users)}"
         f"{FOOTER}"
     )
 
@@ -365,13 +370,13 @@ async def process_instagram(update, url, loading_msg):
     elif mtype == "album" and images:
         # Send photos as a media group (up to 10)
         from telegram import InputMediaPhoto
-        group = [InputMediaPhoto(media=u, caption=(caption_base if i == 0 else ""), parse_mode=ParseMode.HTML)
-                 for i, u in enumerate(images[:10])]
+        group = [InputMediaPhoto(media=u, caption=(caption_base if idx == 0 else ""), parse_mode=ParseMode.HTML)
+                 for idx, u in enumerate(images[:10])]
         try:
             await update.message.reply_media_group(media=group)
         except TelegramError:
             # fallback: buttons
-            links = [(f"صورة {i+1}", u) for i, u in enumerate(images[:8])]
+            links = [(f"صورة {idx+1}", u) for idx, u in enumerate(images[:8])]
             await update.message.reply_text(
                 caption_base, parse_mode=ParseMode.HTML,
                 reply_markup=url_kb(links), disable_web_page_preview=True,
