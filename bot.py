@@ -1,15 +1,17 @@
 """
-╔══════════════════════════════════════════╗
-║       SnatchTik Bot — v2.0 Pro           ║
-║  TikTok · Facebook · Instagram           ║
-╚══════════════════════════════════════════╝
+SnatchTik Bot v3.0 — Ultra Pro
+Direct video delivery · HTML formatting · Linktree branding
 """
 
-import os, logging, httpx
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+import os, logging, asyncio, httpx
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters,
+)
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
-# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -19,55 +21,52 @@ TIKTOK_KEY    = os.environ.get("TIKTOK_API_KEY", "")
 RAPIDAPI_KEY  = os.environ.get("RAPIDAPI_KEY", "")
 FASTSAVER_KEY = os.environ.get("FASTSAVER_API_KEY", "")
 LINKTREE      = "https://linktr.ee/snatchtik"
-WEBSITE       = "https://snatchtik.com"
 
-# ── In-memory stats ───────────────────────────────────────────────────────────
+# ── Stats ─────────────────────────────────────────────────────────────────────
 stats = {"total": 0, "tiktok": 0, "facebook": 0, "instagram": 0, "users": set()}
 
-# ── Brand strings ─────────────────────────────────────────────────────────────
-BRAND_FOOTER = f"\n\n━━━━━━━━━━━━━━━━━━━━\n🌐 [SnatchTik.com]({WEBSITE})  •  🔗 [روابطنا]({LINKTREE})"
+# ── HTML helpers ──────────────────────────────────────────────────────────────
+def b(t): return f"<b>{t}</b>"
+def i(t): return f"<i>{t}</i>"
+def code(t): return f"<code>{t}</code>"
+def link(label, url): return f'<a href="{url}">{label}</a>'
 
-LOADING_FRAMES = [
-    "⬛⬛⬛⬛⬛  0%",
-    "🟩⬛⬛⬛⬛  20%",
-    "🟩🟩⬛⬛⬛  40%",
-    "🟩🟩🟩⬛⬛  60%",
-    "🟩🟩🟩🟩⬛  80%",
-    "🟩🟩🟩🟩🟩  100% ✅",
-]
+DIVIDER = "──────────────────────"
+FOOTER  = f'\n{DIVIDER}\n{link("⬡  SnatchTik — All Links", LINKTREE)}'
 
 # ── Platform detection ────────────────────────────────────────────────────────
-def detect_platform(url: str) -> str:
+def detect(url: str) -> str:
     u = url.lower()
-    if "tiktok.com" in u or "vm.tiktok.com" in u: return "tiktok"
+    if "tiktok.com" in u: return "tiktok"
     if "facebook.com" in u or "fb.watch" in u or "fb.com" in u: return "facebook"
     if "instagram.com" in u or "instagr.am" in u: return "instagram"
     return "other"
 
-def is_url(text: str) -> bool:
-    return text.strip().startswith(("http://", "https://"))
+def is_url(t: str) -> bool:
+    return t.strip().startswith(("http://", "https://"))
 
-def trim(text: str, n: int = 180) -> str:
-    return (text[:n] + "…") if text and len(text) > n else (text or "")
+def trim(t: str, n=160) -> str:
+    if not t: return ""
+    return t[:n] + ("…" if len(t) > n else "")
 
-# ── API callers ───────────────────────────────────────────────────────────────
+# ── API calls ─────────────────────────────────────────────────────────────────
 async def api_tiktok(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
+        async with httpx.AsyncClient(timeout=20) as c:
             r = await c.get("https://api.tikwmapi.com/",
                             params={"url": url, "hd": 1},
                             headers={"x-tikwmapi-key": TIKTOK_KEY})
             if r.status_code == 200:
                 d = r.json()
-                if d.get("code") == 0 and "data" in d:
-                    return d["data"]
+                if d.get("code") == 0:
+                    return d.get("data", {})
     except Exception as e:
-        logger.error(f"[tiktok api] {e}")
+        logger.error(f"[tiktok] {e}")
     return {}
 
 async def api_facebook(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
+        async with httpx.AsyncClient(timeout=20) as c:
             r = await c.post(
                 "https://free-facebook-downloader.p.rapidapi.com/external-api/facebook-video-downloader",
                 params={"url": url}, json={"key1": "value", "key2": "value"},
@@ -77,381 +76,370 @@ async def api_facebook(url: str) -> dict:
             if r.status_code == 200:
                 d = r.json()
                 if d.get("success") and "links" in d:
-                    return {"hdplay": d["links"].get("Download High Quality"),
-                            "play":   d["links"].get("Download Low Quality")}
+                    return {"hd": d["links"].get("Download High Quality"),
+                            "sd": d["links"].get("Download Low Quality")}
     except Exception as e:
-        logger.error(f"[facebook api] {e}")
+        logger.error(f"[facebook] {e}")
     return {}
 
 async def api_instagram(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
+        async with httpx.AsyncClient(timeout=20) as c:
             r = await c.get("https://api.fastsaver.io/v1/fetch",
-                            params={"url": url}, headers={"X-Api-Key": FASTSAVER_KEY})
+                            params={"url": url},
+                            headers={"X-Api-Key": FASTSAVER_KEY})
             if r.status_code == 200:
                 d = r.json()
                 if d.get("ok"):
-                    result = {"title": d.get("title") or d.get("caption") or "Instagram Post",
-                              "type": d.get("type"),
-                              "hdplay": d.get("download_url") if d.get("type") == "video" else None,
-                              "thumbnail": d.get("thumbnail_url"), "images": []}
-                    if d.get("type") == "album" and "items" in d:
-                        result["images"] = [i.get("download_url") for i in d["items"] if i.get("type") == "image"]
+                    res = {"title": d.get("title") or d.get("caption") or "Instagram",
+                           "type": d.get("type"),
+                           "video": d.get("download_url") if d.get("type") == "video" else None,
+                           "thumb": d.get("thumbnail_url"),
+                           "images": []}
+                    if d.get("type") == "album":
+                        res["images"] = [x.get("download_url") for x in d.get("items", []) if x.get("type") == "image"]
                     elif d.get("type") == "image":
-                        result["images"] = [d.get("download_url")]
-                    return result
+                        res["images"] = [d.get("download_url")]
+                    return res
     except Exception as e:
-        logger.error(f"[instagram api] {e}")
+        logger.error(f"[instagram] {e}")
     return {}
 
-# ── Main menu keyboard ────────────────────────────────────────────────────────
-def main_menu_kb() -> InlineKeyboardMarkup:
+# ── Keyboards ─────────────────────────────────────────────────────────────────
+def home_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎵 TikTok", callback_data="guide_tiktok"),
-         InlineKeyboardButton("📘 Facebook", callback_data="guide_facebook"),
-         InlineKeyboardButton("📸 Instagram", callback_data="guide_instagram")],
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats"),
-         InlineKeyboardButton("❓ المساعدة", callback_data="help")],
-        [InlineKeyboardButton("🌐 الموقع الرسمي", url=WEBSITE),
-         InlineKeyboardButton("🔗 روابطنا", url=LINKTREE)],
+        [InlineKeyboardButton("TikTok", callback_data="g:tiktok"),
+         InlineKeyboardButton("Facebook", callback_data="g:facebook"),
+         InlineKeyboardButton("Instagram", callback_data="g:instagram")],
+        [InlineKeyboardButton("الإحصائيات", callback_data="stats"),
+         InlineKeyboardButton("المساعدة", callback_data="help")],
+        [InlineKeyboardButton("روابط SnatchTik", url=LINKTREE)],
     ])
 
-def back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]])
+def back_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("القائمة الرئيسية", callback_data="home")]])
 
-# ── /start ────────────────────────────────────────────────────────────────────
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    stats["users"].add(user.id)
-    name = user.first_name or "صديقي"
-    text = (
-        f"✨ *أهلاً وسهلاً، {name}!*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚀 *SnatchTik Bot* — أقوى بوت لتحميل الفيديوهات\n\n"
-        "🎯 *ما الذي يمكنني فعله؟*\n"
-        "┣ 🎵 تحميل TikTok بدون علامة مائية\n"
-        "┣ 🎧 استخراج الصوت MP3 من TikTok\n"
-        "┣ 📘 تحميل فيديوهات Facebook (HD)\n"
-        "┗ 📸 تحميل صور وفيديوهات Instagram\n\n"
-        "⚡ *كيف تستخدمني؟*\n"
-        "فقط أرسل الرابط مباشرةً وأنا سأتكفل بالباقي!\n\n"
-        "🔥 *سريع · مجاني · بدون علامة مائية*"
-        f"{BRAND_FOOTER}"
+def url_kb(rows: list):
+    """rows = list of (label, url)"""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, url=u)] for label, u in rows] +
+        [[InlineKeyboardButton("روابط SnatchTik", url=LINKTREE)]]
     )
-    if update.message:
-        await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                         reply_markup=main_menu_kb(), disable_web_page_preview=True)
-    else:
-        await update.callback_query.edit_message_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                                       reply_markup=main_menu_kb(), disable_web_page_preview=True)
 
-# ── /stats ────────────────────────────────────────────────────────────────────
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📊 *إحصائيات SnatchTik Bot*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 إجمالي التحميلات: `{stats['total']:,}`\n"
-        f"🎵 TikTok: `{stats['tiktok']:,}`\n"
-        f"📘 Facebook: `{stats['facebook']:,}`\n"
-        f"📸 Instagram: `{stats['instagram']:,}`\n"
-        f"👥 المستخدمون الفريدون: `{len(stats['users']):,}`"
-        f"{BRAND_FOOTER}"
-    )
-    if update.message:
-        await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                         reply_markup=back_kb(), disable_web_page_preview=True)
-    else:
-        await update.callback_query.edit_message_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                                       reply_markup=back_kb(), disable_web_page_preview=True)
+# ── Screens ───────────────────────────────────────────────────────────────────
+HOME_TEXT = (
+    f"{b('SnatchTik')}\n"
+    f"{DIVIDER}\n"
+    f"حمّل فيديوهاتك بدون علامة مائية\n\n"
+    f"{b('المنصات المدعومة')}\n"
+    f"  TikTok · Facebook · Instagram\n\n"
+    f"{b('كيف تستخدم البوت؟')}\n"
+    f"  أرسل الرابط مباشرةً\n"
+    f"  البوت سيرسل الفيديو تلقائياً\n"
+    f"{FOOTER}"
+)
 
-# ── /help ─────────────────────────────────────────────────────────────────────
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "❓ *دليل الاستخدام*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "*📋 الأوامر المتاحة:*\n"
-        "┣ /start — الصفحة الرئيسية\n"
-        "┣ /help  — هذا الدليل\n"
-        "┗ /stats — الإحصائيات\n\n"
-        "*🎯 خطوات التحميل:*\n"
-        "1️⃣ افتح TikTok / Facebook / Instagram\n"
-        "2️⃣ انسخ رابط الفيديو أو المنشور\n"
-        "3️⃣ الصقه هنا وأرسله\n"
-        "4️⃣ اضغط زر التحميل ✅\n\n"
-        "*⚠️ ملاحظات مهمة:*\n"
-        "┣ فيديوهات Facebook يجب أن تكون عامة\n"
-        "┣ حسابات Instagram يجب أن تكون عامة\n"
-        "┗ روابط التحميل صالحة لفترة محدودة\n\n"
-        "*🆘 هل واجهت مشكلة؟*\n"
-        f"زر موقعنا: [snatchtik.com]({WEBSITE})"
-        f"{BRAND_FOOTER}"
-    )
-    if update.message:
-        await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                         reply_markup=back_kb(), disable_web_page_preview=True)
-    else:
-        await update.callback_query.edit_message_text(text, parse_mode=constants.ParseMode.MARKDOWN,
-                                                       reply_markup=back_kb(), disable_web_page_preview=True)
+HELP_TEXT = (
+    f"{b('دليل الاستخدام')}\n"
+    f"{DIVIDER}\n\n"
+    f"{b('الخطوات')}\n"
+    f"  ١ — انسخ رابط الفيديو\n"
+    f"  ٢ — الصقه هنا وأرسله\n"
+    f"  ٣ — الفيديو يصلك مباشرةً\n\n"
+    f"{b('الأوامر')}\n"
+    f"  /start   القائمة الرئيسية\n"
+    f"  /help    هذا الدليل\n"
+    f"  /stats   الإحصائيات\n\n"
+    f"{b('ملاحظات')}\n"
+    f"  Facebook — يجب أن يكون الفيديو عاماً\n"
+    f"  Instagram — يجب أن يكون الحساب عاماً\n"
+    f"  الفيديوهات الكبيرة تُرسَل كرابط تحميل"
+    f"{FOOTER}"
+)
 
-# ── Callback buttons ──────────────────────────────────────────────────────────
-GUIDE = {
-    "guide_tiktok": (
-        "🎵 *دليل تحميل TikTok*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ *ما يدعمه البوت:*\n"
-        "┣ فيديو HD بدون علامة مائية\n"
-        "┣ استخراج الصوت MP3\n"
-        "┗ روابط vm.tiktok.com المختصرة\n\n"
-        "📋 *طريقة الاستخدام:*\n"
-        "أرسل رابط TikTok مباشرةً الآن ⬇️"
-    ),
-    "guide_facebook": (
-        "📘 *دليل تحميل Facebook*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ *ما يدعمه البوت:*\n"
-        "┣ فيديو جودة عالية HD\n"
-        "┗ فيديو جودة عادية SD\n\n"
-        "⚠️ *شروط:*\n"
-        "┗ يجب أن يكون الفيديو عاماً (Public)\n\n"
-        "📋 *طريقة الاستخدام:*\n"
-        "أرسل رابط Facebook مباشرةً الآن ⬇️"
-    ),
-    "guide_instagram": (
-        "📸 *دليل تحميل Instagram*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ *ما يدعمه البوت:*\n"
-        "┣ فيديو Reels\n"
-        "┣ صورة منفردة\n"
-        "┗ ألبوم صور (Carousel)\n\n"
-        "⚠️ *شروط:*\n"
-        "┗ يجب أن يكون الحساب عاماً (Public)\n\n"
-        "📋 *طريقة الاستخدام:*\n"
-        "أرسل رابط Instagram مباشرةً الآن ⬇️"
-    ),
+GUIDES = {
+    "tiktok":    (f"{b('TikTok')}\n{DIVIDER}\n\nيدعم البوت:\n  فيديو HD بدون علامة مائية\n  استخراج الصوت MP3\n  الروابط المختصرة vm.tiktok.com\n\nأرسل الرابط الآن" + FOOTER),
+    "facebook":  (f"{b('Facebook')}\n{DIVIDER}\n\nيدعم البوت:\n  جودة عالية HD\n  جودة عادية SD\n\nشرط: الفيديو يجب أن يكون عاماً\n\nأرسل الرابط الآن" + FOOTER),
+    "instagram": (f"{b('Instagram')}\n{DIVIDER}\n\nيدعم البوت:\n  Reels وفيديوهات\n  صورة منفردة\n  ألبوم صور\n\nشرط: الحساب يجب أن يكون عاماً\n\nأرسل الرابط الآن" + FOOTER),
 }
 
-async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    data = q.data
+def stats_text():
+    return (
+        f"{b('إحصائيات SnatchTik Bot')}\n"
+        f"{DIVIDER}\n\n"
+        f"إجمالي التحميلات   {code(f\"{stats['total']:,}\")}\n"
+        f"TikTok             {code(f\"{stats['tiktok']:,}\")}\n"
+        f"Facebook           {code(f\"{stats['facebook']:,}\")}\n"
+        f"Instagram          {code(f\"{stats['instagram']:,}\")}\n"
+        f"المستخدمون         {code(f\"{len(stats['users']):,}\")}"
+        f"{FOOTER}"
+    )
 
-    if data == "main_menu":
-        await cmd_start(update, ctx)
-    elif data == "stats":
-        await cmd_stats(update, ctx)
-    elif data == "help":
-        await cmd_help(update, ctx)
-    elif data in GUIDE:
-        await q.edit_message_text(
-            GUIDE[data] + BRAND_FOOTER,
-            parse_mode=constants.ParseMode.MARKDOWN,
-            reply_markup=back_kb(),
-            disable_web_page_preview=True,
-        )
+# ── Loading animation ─────────────────────────────────────────────────────────
+BARS = ["▱▱▱▱▱", "▰▱▱▱▱", "▰▰▱▱▱", "▰▰▰▱▱", "▰▰▰▰▱", "▰▰▰▰▰"]
 
-# ── Animated loading ──────────────────────────────────────────────────────────
-import asyncio
-
-async def animate_loading(msg, platform_line: str):
-    for frame in LOADING_FRAMES[:-1]:
+async def animate(msg, label: str):
+    for bar in BARS[:-1]:
         try:
             await msg.edit_text(
-                f"⚙️ *جاري المعالجة...*\n{platform_line}\n\n{frame}",
-                parse_mode=constants.ParseMode.MARKDOWN,
-            )
-            await asyncio.sleep(0.6)
+                f"{b(label)}\n{DIVIDER}\n\n{bar}",
+                parse_mode=ParseMode.HTML)
+            await asyncio.sleep(0.55)
         except Exception:
             break
 
-# ── Result cards ──────────────────────────────────────────────────────────────
-def tiktok_card(data: dict) -> tuple[str, InlineKeyboardMarkup]:
-    title    = trim(data.get("title", "TikTok Video"))
-    author   = (data.get("author") or {}).get("nickname", "—")
-    likes    = data.get("digg_count", 0)
-    comments = data.get("comment_count", 0)
-    shares   = data.get("share_count", 0)
+# ── Command handlers ──────────────────────────────────────────────────────────
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    stats["users"].add(update.effective_user.id)
+    send = update.message.reply_text if update.message else update.callback_query.edit_message_text
+    await send(HOME_TEXT, parse_mode=ParseMode.HTML,
+               reply_markup=home_kb(), disable_web_page_preview=True)
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    send = update.message.reply_text if update.message else update.callback_query.edit_message_text
+    await send(HELP_TEXT, parse_mode=ParseMode.HTML,
+               reply_markup=back_kb(), disable_web_page_preview=True)
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    send = update.message.reply_text if update.message else update.callback_query.edit_message_text
+    await send(stats_text(), parse_mode=ParseMode.HTML,
+               reply_markup=back_kb(), disable_web_page_preview=True)
+
+# ── Callback handler ──────────────────────────────────────────────────────────
+async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    d = q.data
+    if d == "home":   await cmd_start(update, ctx)
+    elif d == "help": await cmd_help(update, ctx)
+    elif d == "stats":await cmd_stats(update, ctx)
+    elif d.startswith("g:"):
+        plat = d[2:]
+        await q.edit_message_text(GUIDES[plat], parse_mode=ParseMode.HTML,
+                                   reply_markup=back_kb(), disable_web_page_preview=True)
+
+# ── Media sending helpers ─────────────────────────────────────────────────────
+async def send_video_smart(update, caption, video_url, thumb_url=None, fallback_label="تحميل الفيديو"):
+    """Try to send video natively; fall back to button if too large / error."""
+    try:
+        await update.message.reply_video(
+            video=video_url,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            supports_streaming=True,
+            read_timeout=60, write_timeout=60, connect_timeout=15,
+        )
+        return True
+    except TelegramError as e:
+        logger.warning(f"[send_video] native failed ({e}), falling back to button")
+    # Fallback: send as button
+    await update.message.reply_text(
+        caption,
+        parse_mode=ParseMode.HTML,
+        reply_markup=url_kb([(fallback_label, video_url)]),
+        disable_web_page_preview=True,
+    )
+    return False
+
+async def send_audio_smart(update, caption, audio_url):
+    try:
+        await update.message.reply_audio(
+            audio=audio_url, caption=caption, parse_mode=ParseMode.HTML,
+            read_timeout=60, write_timeout=60,
+        )
+    except TelegramError:
+        await update.message.reply_text(
+            caption, parse_mode=ParseMode.HTML,
+            reply_markup=url_kb([("تحميل MP3", audio_url)]),
+            disable_web_page_preview=True,
+        )
+
+async def send_photo_smart(update, caption, photo_url, kb=None):
+    try:
+        await update.message.reply_photo(
+            photo=photo_url, caption=caption,
+            parse_mode=ParseMode.HTML, reply_markup=kb,
+        )
+    except TelegramError:
+        await update.message.reply_text(
+            caption, parse_mode=ParseMode.HTML, reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+
+# ── Platform processors ───────────────────────────────────────────────────────
+async def process_tiktok(update, url, loading_msg):
+    data = await api_tiktok(url)
+    if not data:
+        raise ValueError("تعذّر جلب بيانات الفيديو. تأكد من الرابط وحاول مجدداً.")
+
     video_hd = data.get("hdplay") or data.get("play") or data.get("wmplay")
     video_sd = data.get("play") or data.get("wmplay")
     audio    = data.get("music") or (data.get("music_info") or {}).get("play")
+    cover    = data.get("cover")
+    title    = trim(data.get("title", "TikTok Video"))
+    author   = (data.get("author") or {}).get("nickname", "")
+    likes    = data.get("digg_count", 0)
+    comments = data.get("comment_count", 0)
     duration = data.get("duration", 0)
 
-    text = (
-        f"🎵 *{title}*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 `{author}`\n"
-        f"⏱ المدة: `{duration}s`\n\n"
-        f"❤️ `{likes:,}`  💬 `{comments:,}`  🔁 `{shares:,}`"
-        f"{BRAND_FOOTER}"
+    if not video_hd:
+        raise ValueError("لا يوجد رابط فيديو متاح.")
+
+    caption = (
+        f"{b(title)}\n"
+        f"{DIVIDER}\n"
+        f"{'@' + author if author else ''}"
+        f"{'  ·  ' if author else ''}{duration}s\n"
+        f"♡ {likes:,}   ✦ {comments:,}"
+        f"{FOOTER}"
     )
-    btns = []
-    if video_hd:
-        btns.append([InlineKeyboardButton("📥 تحميل HD (بدون علامة)", url=video_hd)])
-    if video_sd and video_sd != video_hd:
-        btns.append([InlineKeyboardButton("📥 تحميل SD", url=video_sd)])
+
+    await loading_msg.delete()
+    stats["total"] += 1; stats["tiktok"] += 1
+
+    # Send video natively
+    await send_video_smart(update, caption, video_hd, cover, "تحميل الفيديو HD")
+
+    # Send audio separately if available
     if audio:
-        btns.append([InlineKeyboardButton("🎵 تحميل MP3 فقط", url=audio)])
-    btns.append([InlineKeyboardButton("🌐 الموقع", url=WEBSITE),
-                 InlineKeyboardButton("🔗 روابطنا", url=LINKTREE)])
-    return text, InlineKeyboardMarkup(btns)
+        audio_cap = f"{b('الصوت — ' + title)}\n{b('TikTok MP3')}{FOOTER}"
+        await send_audio_smart(update, audio_cap, audio)
 
-def facebook_card(data: dict) -> tuple[str, InlineKeyboardMarkup]:
-    text = (
-        "📘 *Facebook Video*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ تم جلب الفيديو بنجاح!\n"
-        "اختر جودة التحميل:"
-        f"{BRAND_FOOTER}"
-    )
-    btns = []
-    if data.get("hdplay"):
-        btns.append([InlineKeyboardButton("📥 تحميل HD جودة عالية", url=data["hdplay"])])
-    if data.get("play"):
-        btns.append([InlineKeyboardButton("📥 تحميل SD جودة عادية", url=data["play"])])
-    btns.append([InlineKeyboardButton("🌐 الموقع", url=WEBSITE),
-                 InlineKeyboardButton("🔗 روابطنا", url=LINKTREE)])
-    return text, InlineKeyboardMarkup(btns)
 
-def instagram_card(data: dict) -> tuple[str, list, InlineKeyboardMarkup]:
-    title  = trim(data.get("title", "Instagram Post"))
-    mtype  = data.get("type", "")
-    vurl   = data.get("hdplay")
+async def process_facebook(update, url, loading_msg):
+    data = await api_facebook(url)
+    if not data or (not data.get("hd") and not data.get("sd")):
+        raise ValueError("تعذّر جلب الفيديو. تأكد من أن الفيديو عام (Public).")
+
+    hd = data.get("hd")
+    sd = data.get("sd")
+    caption = f"{b('Facebook Video')}\n{DIVIDER}\n اختر جودة التحميل:{FOOTER}"
+
+    await loading_msg.delete()
+    stats["total"] += 1; stats["facebook"] += 1
+
+    # Try HD native first
+    sent = False
+    if hd:
+        sent = await send_video_smart(update, caption + "\n\n" + i("جودة عالية HD"), hd, fallback_label="تحميل HD")
+
+    # If native HD worked, also offer SD as button; otherwise offer both as buttons
+    if not sent:
+        links = []
+        if hd: links.append(("تحميل HD", hd))
+        if sd: links.append(("تحميل SD", sd))
+        links.append(("روابط SnatchTik", LINKTREE))
+        await update.message.reply_text(
+            caption, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(l, url=u)] for l, u in links]),
+            disable_web_page_preview=True,
+        )
+    elif sd:
+        await update.message.reply_text(
+            i("أو حمّل بجودة عادية:"), parse_mode=ParseMode.HTML,
+            reply_markup=url_kb([("تحميل SD", sd)]),
+        )
+
+
+async def process_instagram(update, url, loading_msg):
+    data = await api_instagram(url)
+    if not data:
+        raise ValueError("تعذّر جلب البيانات. تأكد من أن الحساب عام (Public).")
+
+    title  = trim(data.get("title", "Instagram"))
+    mtype  = data.get("type")
+    video  = data.get("video")
     images = data.get("images", [])
-    icons  = {"video": "🎬", "image": "🖼", "album": "🖼"}
-    icon   = icons.get(mtype, "📸")
-    text = (
-        f"📸 *{title}*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"{icon} النوع: `{mtype}`\n"
-        f"{'🖼 عدد الصور: `' + str(len(images)) + '`' if mtype == 'album' else ''}"
-        f"{BRAND_FOOTER}"
-    )
-    btns = []
-    if vurl:
-        btns.append([InlineKeyboardButton("📥 تحميل الفيديو", url=vurl)])
-    elif images:
-        if mtype == "album":
-            for i, img in enumerate(images[:8]):
-                btns.append([InlineKeyboardButton(f"🖼 تحميل الصورة {i+1}", url=img)])
-        else:
-            btns.append([InlineKeyboardButton("📥 تحميل الصورة", url=images[0])])
-    btns.append([InlineKeyboardButton("🌐 الموقع", url=WEBSITE),
-                 InlineKeyboardButton("🔗 روابطنا", url=LINKTREE)])
-    thumb = data.get("thumbnail") if mtype == "video" else (images[0] if images else None)
-    return text, thumb, InlineKeyboardMarkup(btns)
+    thumb  = data.get("thumb")
+    caption_base = f"{b(title)}\n{DIVIDER}{FOOTER}"
 
-# ── URL handler ───────────────────────────────────────────────────────────────
-async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await loading_msg.delete()
+    stats["total"] += 1; stats["instagram"] += 1
+
+    if mtype == "video" and video:
+        await send_video_smart(update, caption_base, video, thumb, "تحميل الفيديو")
+
+    elif mtype == "image" and images:
+        await send_photo_smart(update, caption_base, images[0])
+
+    elif mtype == "album" and images:
+        # Send photos as a media group (up to 10)
+        from telegram import InputMediaPhoto
+        group = [InputMediaPhoto(media=u, caption=(caption_base if i == 0 else ""), parse_mode=ParseMode.HTML)
+                 for i, u in enumerate(images[:10])]
+        try:
+            await update.message.reply_media_group(media=group)
+        except TelegramError:
+            # fallback: buttons
+            links = [(f"صورة {i+1}", u) for i, u in enumerate(images[:8])]
+            await update.message.reply_text(
+                caption_base, parse_mode=ParseMode.HTML,
+                reply_markup=url_kb(links), disable_web_page_preview=True,
+            )
+    else:
+        raise ValueError("لا يوجد محتوى قابل للتحميل.")
+
+# ── Main message handler ──────────────────────────────────────────────────────
+async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    user = update.effective_user
-    stats["users"].add(user.id)
+    stats["users"].add(update.effective_user.id)
 
     if not is_url(text):
         await update.message.reply_text(
-            "🤔 *لم أفهم رسالتك!*\n\n"
-            "أرسل رابطاً مباشراً من:\n"
-            "🎵 TikTok  •  📘 Facebook  •  📸 Instagram\n\n"
-            "أو اضغط /start للقائمة الرئيسية",
-            parse_mode=constants.ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(),
+            f"{b('أرسل رابطاً صحيحاً')}\n{DIVIDER}\n\n"
+            "نحن ندعم:\n  TikTok · Facebook · Instagram",
+            parse_mode=ParseMode.HTML, reply_markup=home_kb(),
         )
         return
 
-    platform = detect_platform(text)
+    platform = detect(text)
     if platform == "other":
         await update.message.reply_text(
-            "⚠️ *رابط غير مدعوم*\n\n"
-            "نحن ندعم فقط:\n"
-            "🎵 TikTok  •  📘 Facebook  •  📸 Instagram",
-            parse_mode=constants.ParseMode.MARKDOWN,
-            reply_markup=back_kb(),
+            f"{b('رابط غير مدعوم')}\n{DIVIDER}\n\n"
+            "المنصات المدعومة:\n  TikTok · Facebook · Instagram",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
         )
         return
 
-    icons = {"tiktok": "🎵", "facebook": "📘", "instagram": "📸"}
+    labels = {"tiktok": "TikTok", "facebook": "Facebook", "instagram": "Instagram"}
     loading = await update.message.reply_text(
-        f"⚙️ *جاري المعالجة...*\n{icons[platform]} {platform.capitalize()}\n\n⬛⬛⬛⬛⬛  0%",
-        parse_mode=constants.ParseMode.MARKDOWN,
+        f"{b(labels[platform])}\n{DIVIDER}\n\n▱▱▱▱▱",
+        parse_mode=ParseMode.HTML,
     )
-    await animate_loading(loading, f"{icons[platform]} {platform.capitalize()}")
+    await animate(loading, labels[platform])
 
     try:
         if platform == "tiktok":
-            data = await api_tiktok(text)
-            if not data:
-                raise ValueError("no_data")
-            video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
-            if not video_url:
-                raise ValueError("no_url")
-            cover = data.get("cover")
-            card_text, kb = tiktok_card(data)
-            await loading.delete()
-            stats["total"] += 1; stats["tiktok"] += 1
-            if cover:
-                try:
-                    await update.message.reply_photo(photo=cover, caption=card_text,
-                        parse_mode=constants.ParseMode.MARKDOWN, reply_markup=kb)
-                    return
-                except Exception:
-                    pass
-            await update.message.reply_text(card_text, parse_mode=constants.ParseMode.MARKDOWN,
-                                             reply_markup=kb, disable_web_page_preview=True)
-
+            await process_tiktok(update, text, loading)
         elif platform == "facebook":
-            data = await api_facebook(text)
-            if not data or (not data.get("hdplay") and not data.get("play")):
-                raise ValueError("no_data")
-            card_text, kb = facebook_card(data)
-            await loading.delete()
-            stats["total"] += 1; stats["facebook"] += 1
-            await update.message.reply_text(card_text, parse_mode=constants.ParseMode.MARKDOWN,
-                                             reply_markup=kb, disable_web_page_preview=True)
-
+            await process_facebook(update, text, loading)
         elif platform == "instagram":
-            data = await api_instagram(text)
-            if not data:
-                raise ValueError("no_data")
-            card_text, thumb, kb = instagram_card(data)
-            await loading.delete()
-            stats["total"] += 1; stats["instagram"] += 1
-            if thumb:
-                try:
-                    await update.message.reply_photo(photo=thumb, caption=card_text,
-                        parse_mode=constants.ParseMode.MARKDOWN, reply_markup=kb)
-                    return
-                except Exception:
-                    pass
-            await update.message.reply_text(card_text, parse_mode=constants.ParseMode.MARKDOWN,
-                                             reply_markup=kb, disable_web_page_preview=True)
+            await process_instagram(update, text, loading)
 
-    except ValueError as ve:
-        err_map = {
-            "no_data": "❌ *تعذّر جلب البيانات*\n\nتأكد من:\n┣ صحة الرابط\n┣ أن المحتوى عام\n┗ حاول مرة أخرى",
-            "no_url":  "❌ *لا يوجد رابط تحميل*\n\nالفيديو غير متاح أو محمي.",
-        }
-        msg = err_map.get(str(ve), "❌ خطأ غير متوقع.")
-        try:
-            await loading.edit_text(msg + BRAND_FOOTER, parse_mode=constants.ParseMode.MARKDOWN,
-                                     reply_markup=back_kb(), disable_web_page_preview=True)
-        except Exception:
-            pass
+    except ValueError as e:
+        await loading.edit_text(
+            f"{b('تعذّر التحميل')}\n{DIVIDER}\n\n{e}{FOOTER}",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(), disable_web_page_preview=True,
+        )
     except Exception as e:
-        logger.error(f"[handle_message] {e}", exc_info=True)
+        logger.error(f"[on_message] {e}", exc_info=True)
         try:
             await loading.edit_text(
-                "❌ *حدث خطأ أثناء المعالجة*\n\nيرجى المحاولة مرة أخرى." + BRAND_FOOTER,
-                parse_mode=constants.ParseMode.MARKDOWN, reply_markup=back_kb(), disable_web_page_preview=True)
+                f"{b('حدث خطأ غير متوقع')}\n{DIVIDER}\n\nيرجى المحاولة لاحقاً.{FOOTER}",
+                parse_mode=ParseMode.HTML, reply_markup=back_kb(), disable_web_page_preview=True,
+            )
         except Exception:
             pass
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("🤖 SnatchTik Pro Bot started!")
+    app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    logger.info("SnatchTik Bot v3.0 Pro — Running")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
